@@ -5,7 +5,7 @@ import java.util.Scanner;
 public class ExManager {
     private final String path;
     private int num_of_nodes;
-    private Node[] nodes;
+    private Node[] nodes;  // is this all I need here???
 
     /**
      * The class constructor only saves the path to the input file.
@@ -26,6 +26,7 @@ public class ExManager {
      * @return - Node with this id
      */
     public Node getNode(int id) {
+        return nodes[id + 1];
     }
 
     /**
