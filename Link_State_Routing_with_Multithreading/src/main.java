@@ -17,20 +17,21 @@ public class main {
             int num_of_nodes = m.getNum_of_nodes();
 
             Scanner scanner = new Scanner(new File(path));
-            while(scanner.hasNextLine()) {
+            while(scanner.hasNextLine()){
                 String line = scanner.nextLine();
-                if(line.contains("start")) {
+                if(line.contains("start")){
                     m.start();
                     Node n = m.getNode(1 + (int)(Math.random() * num_of_nodes));
                     n.print_graph();
                     System.out.println();
                 }
 
-                if(line.contains("update")) {
+                if(line.contains("update")){
                     String[] data = line.split(" ");
                     m.update_edge(Integer.parseInt(data[1]), Integer.parseInt(data[2]), Double.parseDouble(data[3]));
                 }
             }
+            m.terminate();
         }
     }
 }

@@ -4,7 +4,7 @@ import java.io.*;
 
 enum TYPES {BROADCAST, ROUTING, PRIVATE, ACKNOWLEDGEMENT}
 
-public class Message<K, V> extends Pair<K, V> implements Serializable, Runnable {
+public class Message<K, V> extends Pair<K, V> implements Serializable {
 
     public K type;
     private V content;
@@ -58,13 +58,5 @@ public class Message<K, V> extends Pair<K, V> implements Serializable, Runnable 
 
         } catch (Exception ignored) {}  // covered by hasAddress function
         return null;
-    }
-
-    public void setContent(V content) {
-        this.content = content;
-    }
-
-    public void run() {
-
     }
 }
