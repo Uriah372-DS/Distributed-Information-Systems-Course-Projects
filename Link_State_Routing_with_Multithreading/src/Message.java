@@ -4,12 +4,12 @@ import java.io.*;
 
 enum TYPES {BROADCAST, ROUTING, PRIVATE, ACKNOWLEDGEMENT}
 
-public class Message<K, V> extends Pair<K, V> implements Serializable {
+public class Message<T, V> extends Pair<T, V> implements Serializable {
 
-    public K type;
+    public T type;
     private V content;
 
-    public Message(K type, V content) {
+    public Message(T type, V content) {
         super(type, content);
         this.type = type;
         this.content = content;

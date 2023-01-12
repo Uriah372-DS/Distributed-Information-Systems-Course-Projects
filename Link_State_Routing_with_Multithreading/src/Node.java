@@ -7,9 +7,11 @@ public class Node extends Thread {
 
     private final int nodeID;
     private final int numOfNodes;
+    private boolean establishedConnections;
     private final HashMap<Integer, PortListener> portListeners;
     public HashMap<Integer, HashMap<String, Number>> RoutingTable;
     public HashMap<Integer, HashMap<String, Number>> NeighborsTable;
+    public HashSet<Integer> updatedNodes;
     private Semaphore finishRoundGlobal;
     private Semaphore finishRoundLocal;
 
@@ -30,7 +32,14 @@ public class Node extends Thread {
 
         this.NeighborsTable = NeighborsTable;
 
+        this.updatedNodes = new HashSet<>();
+
+        this.establishedConnections = false;
+
         this.finishRoundGlobal  = finishRoundGlobal;
+
+        // use a semaphore to make the node thread wait until it receives a message from all other nodes.
+        this.finishRoundLocal = new Semaphore(this.numOfNodes - 1);
 
         // initialize a port listener for every neighbor to establish communication
         portListeners = new HashMap<>();
@@ -38,9 +47,6 @@ public class Node extends Thread {
             int neighborPort = (Integer)(this.NeighborsTable.get(neighborId).get("listen port"));
             this.portListeners.put(neighborId, new PortListener(neighborPort, this, finishRoundLocal));
         }
-
-        // use a semaphore to make the node thread wait until it receives a message from all of its neighbors.
-        this.finishRoundLocal = new Semaphore(this.numOfNodes - 1);
 
         // initialize the fields of the routing table null, assume they will be filled later in the run.
         this.RoutingTable = new HashMap<>();
@@ -67,52 +73,72 @@ public class Node extends Thread {
      *
      * @return - the node's unique ID number, between 1 and numOfNodes.
      */
-    public int getNodeID() {
-        return nodeID;
-    }
+    public int getNodeID() { return nodeID; }
 
     public HashSet<Pair<Pair<Integer, Integer>, Number>> createLinkStates() {
+
         // create new empty set of pairs
         HashSet<Pair<Pair<Integer, Integer>, Number>> linkStates = new HashSet<>();
+
         // fill the set with edges and their weights
         for (int neighborId : this.NeighborsTable.keySet()) {
             linkStates.add(new Pair<Pair<Integer, Integer>, Number>(
                     new Pair<Integer, Integer>(nodeID, neighborId),
                     this.NeighborsTable.get(neighborId).get("weight")));
         }
+
         // return a set of the form {<(u, v), w(u, v)> | u in N(v)}
         return linkStates;
     }
 
+    public void establishConnections() {
+        for (PortListener listener : portListeners.values()) { listener.startListening(); }
+        this.establishedConnections = true;
+    }
+
+    public void terminateConnections() {
+        for (PortListener listener : portListeners.values()) { listener.stopListening(); }
+        this.establishedConnections = true;
+    }
+
     @Override
     public void run() {
-        // start the PortListener threads
-        for (PortListener listener : portListeners.values()) {
-            listener.start();
+        if (!this.establishedConnections) {
+            System.out.println("node " + this.nodeID + " connections not established!");
+            return;
         }
 
         linkStateRound();
         // HashSet<Pair<Pair<Integer, Integer>, Number>> linkStates = createLinkStates();
-        // broadcast(link);
-        // wait()  // until "notify" using an "Event"
+        // broadcast(linkStates);
+        // wait();
         // Graph g = new Graph(this);
-        // RoutingTable = g.shortestPaths()
+        // RoutingTable = g.shortestPaths();
 
         // stop the PortListener threads
-        for (PortListener listener : portListeners.values()) {
-            listener.stopListening();
-        }
+        terminateConnections();
         this.finishRoundGlobal.release();
     }
 
-    public void broadcast(HashSet<Pair<Pair<Integer, Integer>, Number>> linkStates) {
+    private void broadcast(HashSet<Pair<Pair<Integer, Integer>, Number>> linkStates) {
+
         // send link state packet to all neighbors
         for (Integer neighborId : NeighborsTable.keySet()) {
+            // create a Message instance to broadcast to this node
+            TYPES msgType = TYPES.BROADCAST;
+            HashMap<String, Serializable> msgContent = new HashMap<>();
+            msgContent.put("Origin", this.nodeID);
+            msgContent.put("HopCounter", this.numOfNodes - 1);
+            msgContent.put("LinkStates", linkStates);
+            Message<TYPES, HashMap<String, Serializable>> msg = new Message<>(msgType, msgContent);
+
+            // send link state message to this neighbor
             int sendPort = (Integer)(NeighborsTable.get(neighborId).get("send port"));
             try {
                 Socket socket = new Socket("localhost", sendPort);
-                DataOutputStream output = new DataOutputStream(socket.getOutputStream());
-                // should use the Message class here!!! easier parsing with it:)
+                ObjectOutputStream output = new ObjectOutputStream(new DataOutputStream(socket.getOutputStream()));
+                output.writeObject(msg);
+                output.flush();
                 socket.close();
             } catch (IOException e) {
                 e.printStackTrace();
