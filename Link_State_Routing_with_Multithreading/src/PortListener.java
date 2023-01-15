@@ -1,4 +1,3 @@
-import javax.script.ScriptEngineManager;
 import java.io.*;
 import java.net.*;
 import java.util.*;
@@ -7,103 +6,122 @@ import java.util.concurrent.Semaphore;
 
 class PortListener extends Thread {
     public int port;
-    protected boolean isRunning;
+    private ServerSocket serverSocket;
+    protected boolean isRunning;  // used as a flag to signal this PortListener to start or stop running
+    protected boolean isListening;  // used as a flag to signal the node that this port is listening
     private final Node node;
-    private Semaphore semaphore;
+    private final Semaphore listenerSignal;
 
-    PortListener(int port, Node node, Semaphore semaphore) {
+    PortListener(int port, Node node, Semaphore listenerSignal) {
         this.port = port;
         this.node = node;
-        this.semaphore = semaphore;
+        this.listenerSignal = listenerSignal;
         this.isRunning = false;
     }
 
-    public void startListening(){
+    public void startListening() {
         this.isRunning = true;
-        start();
     }
 
     public void stopListening(){
         this.isRunning = false;
+        try {
+            serverSocket.close();
+        } catch (SocketException ignore) {
+            //System.out.println("PortListener on port" + this.port + " successfully interrupted the ServerSocket");
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     @Override
-    public void run(){
+    public void run() {
+        serverSocket = null;
         try {
-            ServerSocket serverSocket = new ServerSocket(this.port);
+            serverSocket = new ServerSocket(this.port);
+            this.isListening = true;
+
+            startListening();
             while(this.isRunning) {
-                System.out.println("node: " + node.getNodeID() + " TCP listening on: " + this.port);
 
-                Socket clientSocket = serverSocket.accept();
+                Socket clientSocket = serverSocket.accept();  // blocks until message is received
 
-                System.out.println("Just connected to " + clientSocket.getRemoteSocketAddress());
-                ClientHandler clientHandler = new ClientHandler(clientSocket, this.node, semaphore);
+                ClientHandler clientHandler = new ClientHandler(clientSocket, this.node, listenerSignal);
                 clientHandler.start();
             }
-        } catch (SocketTimeoutException s) {
-            System.out.println("Socket timed out!");
+            serverSocket.close();
+        } catch (SocketTimeoutException ignore) {
+            //System.out.println("Socket timed out at port " + this.port + " in node " + this.node.nodeID);
+        } catch (SocketException ignore) {
+            //System.out.println("ServerSocket in port " + this.port + " closed by interruption in node " + node.nodeID);
         } catch (IOException e) {
+            //System.out.println("IOException at port " + this.port + " in node " + this.node.nodeID);
             e.printStackTrace();
+        }  finally {
+            try {
+                if (serverSocket != null)
+                    serverSocket.close();
+            } catch (IOException e) {
+                //System.out.println("IOException while trying to close serverSocket at port " + this.port + " in node " + this.node.nodeID);
+                e.printStackTrace();
+            }
         }
     }
 }
 
 class ClientHandler extends Thread {
-    Socket socket;
-    Node node;
-    Semaphore semaphore;
-    ClientHandler(Socket socket, Node node, Semaphore semaphore) {
+    final Socket socket;
+    final Node node;
+    final Semaphore listenerSignal;
+    ClientHandler(Socket socket, Node node, Semaphore listenerSignal) {
         this.socket = socket;
         this.node = node;
-        this.semaphore = semaphore;
-    }
-
-    private void updateNodeInfo(Message<TYPES, HashMap<String, Serializable>> msg) {
-        if (!this.node.updatedNodes.contains((Integer) msg.getContent().get("Origin"))) {
-            // update the weights of all the edges
-            //noinspection unchecked
-            HashSet<Pair<Pair<Integer, Integer>, Number>> linkStates =
-                    (HashSet<Pair<Pair<Integer, Integer>, Number>>) msg.getContent().get("LinkStates");
-            for (Pair<Pair<Integer, Integer>, Number> linkState : linkStates) {
-                HashMap<String, Number> nodeAttributes = new HashMap<>();
-                this.node.RoutingTable.put();
-            }
-        }
-    }
-
-    private void forward(Message<TYPES, HashMap<String, Serializable>> msg) {
-        HashMap<String, Serializable> msgContent = new HashMap<>();
-        msgContent.put("Origin", msg.getContent().get("Origin"));
-        msgContent.put("HopCounter", ((Integer) msg.getContent().get("HopCounter")) - 1);
-        msgContent.put("LinkStates", msg.getContent().get("LinkStates"));
+        this.listenerSignal = listenerSignal;
     }
 
     public void run() {
+        ObjectInputStream input = null;
+        ObjectOutputStream output = null;
         try {
-            ObjectInputStream input = new ObjectInputStream(new DataInputStream(this.socket.getInputStream()));
-            ObjectOutputStream output = new ObjectOutputStream(new DataOutputStream(this.socket.getOutputStream()));
+            input = new ObjectInputStream(new DataInputStream(this.socket.getInputStream()));
+            output = new ObjectOutputStream(new DataOutputStream(this.socket.getOutputStream()));
             Object msgObject = input.readObject();
-            if (msgObject instanceof Message) {
-                //noinspection unchecked
-                Message<TYPES, HashMap<String, Serializable>> msg =
-                        (Message<TYPES, HashMap<String, Serializable>>) input.readObject();
-                switch (msg.type) {
-                    case BROADCAST:
-                        if (((Integer) msg.getContent().get("HopCounter")) > 0) forward(msg);
-                        else updateNodeInfo(msg);
-
+            //noinspection unchecked
+            Message<TYPES, HashMap<String, Serializable>> msg =
+                    (Message<TYPES, HashMap<String, Serializable>>) msgObject;
+            if (msg.type == TYPES.BROADCAST) {
+                HashMap<String, Serializable> msgContent = msg.getContent();
+                Integer source = (Integer) msgContent.get("Source");
+                synchronized (this.node) {
+                    if ((Integer) msgContent.get("Sequence") > this.node.SequenceCounter.get(source)) {
+                        this.node.broadcast(msg, this.socket.getPort());
+                        this.node.updateNodeInfo(msgContent);
+                    }
                 }
+            } else {
+                throw new WTFException("There shouldn't be any " + msg.type + " messages in this network!");
             }
-            input.close();
-            output.close();
-            this.socket.close();
+        } catch (NumberFormatException | EOFException ignore) {
 
-            // decrement the semaphore count
-            semaphore.release();
-        } catch (NumberFormatException ignore){
-
-        } catch (ClassNotFoundException | IOException e){
+        } catch (ClassNotFoundException | IOException e) {
             e.printStackTrace();
+        } finally {
+            try {
+                if (input != null)
+                    input.close();
+                if (output != null)
+                    output.close();
+                this.socket.close();
+            } catch (IOException e) {
+                //System.out.println("IOException while trying to close input, output, or socket in ClientHandler");
+                e.printStackTrace();
+            }
         }
+    }
+}
+
+class WTFException extends RuntimeException {
+    public WTFException(String errorMessage) {
+        super(errorMessage);
     }
 }

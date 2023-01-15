@@ -1,8 +1,7 @@
-import java.net.*;
 import java.util.*;
 import java.io.*;
 
-enum TYPES {BROADCAST, ROUTING, PRIVATE, ACKNOWLEDGEMENT}
+enum TYPES {BROADCAST, PRIVATE, ACKNOWLEDGEMENT}
 
 public class Message<T, V> extends Pair<T, V> implements Serializable {
 
@@ -20,12 +19,11 @@ public class Message<T, V> extends Pair<T, V> implements Serializable {
      * @return - value of "content" attribute of this message instance.
      */
     public V getContent() {
-        if (type == TYPES.BROADCAST || type == TYPES.ROUTING || type == TYPES.ACKNOWLEDGEMENT) return content;
+        if (type == TYPES.BROADCAST || type == TYPES.ACKNOWLEDGEMENT) return content;
         else return null;
     }
 
     /**
-     *
      * @return - True if content contains an "address" field, False otherwise.
      */
     private Boolean hasAddress() {
@@ -36,8 +34,9 @@ public class Message<T, V> extends Pair<T, V> implements Serializable {
      * Returns the content of private messages only if the recipient node's address is provided.
      * if a wrong address is provided the message will SELF-DESTRUCT! ¯\_( ͡❛ ͜ʖ ͡❛)_/¯
      * @param nodeAddress - the recipient node address.
-     * @return -
+     * @return - the message content, hopefully...
      */
+    @SuppressWarnings("unused")
     public V getContent(int nodeAddress) {
         if ((type == TYPES.BROADCAST))
             return content;

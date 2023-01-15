@@ -1,12 +1,12 @@
 import java.io.*;
 import java.util.*;
-import java.util.concurrent.Semaphore;  // still from java.util
+import java.util.concurrent.Semaphore;
 
 public class ExManager {
     private final String path;
     private int numOfNodes;
     private HashMap<Integer, Node> nodes;
-    private Semaphore finishRoundGlobal;
+    public int roundNumber;
 
     /**
      * The class constructor only saves the path to the input file.
@@ -16,10 +16,7 @@ public class ExManager {
     public ExManager(String path) {
 
         this.path = path;
-    }
-
-    public String getPath() {
-        return path;
+        this.roundNumber = 0;
     }
 
     /**
@@ -55,45 +52,106 @@ public class ExManager {
         Scanner scanner = new Scanner(new File(path));
         // get number of nodes on first line:
         this.numOfNodes = Integer.parseInt(scanner.nextLine());
+
         this.nodes = new HashMap<>();
         // scan nodes information on the rest of the input.
         while(scanner.hasNextLine()) {
             String line = scanner.nextLine();
+
+            //stop reading when seeing "stop" string
             if(line.contains("stop")) { break; }
+
             String[] node_parameters = line.split(" ");
             int nodeId = Integer.parseInt(node_parameters[0]);
             HashMap<Integer, HashMap<String, Number>> NeighborsTable = new HashMap<>();
             for (int i = 1; i < node_parameters.length; i += 4) {
+
+                // parse the file string info of this label
                 int neighborId = Integer.parseInt(node_parameters[i]);
-                int linkWeight = Integer.parseInt(node_parameters[i + 1]);
+                double linkWeight = Double.parseDouble(node_parameters[i + 1]);
                 int sendPort = Integer.parseInt(node_parameters[i + 2]);
                 int listenPort = Integer.parseInt(node_parameters[i + 3]);
+
+                // add it to the node's NeighborsTable
                 HashMap<String, Number> nodeAttributes = new HashMap<>();
                 nodeAttributes.put("weight", linkWeight);
                 nodeAttributes.put("send port", sendPort);
                 nodeAttributes.put("listen port", listenPort);
                 NeighborsTable.put(neighborId, nodeAttributes);
             }
-            this.nodes.put(nodeId, new Node(nodeId, this.numOfNodes, NeighborsTable, finishRoundGlobal));
+            this.nodes.put(nodeId, new Node(nodeId, this.numOfNodes, NeighborsTable));
         }
-
-        // can now initialize the semaphore condition to finish the global round
-        this.finishRoundGlobal = new Semaphore(this.numOfNodes);
     }
 
     /**
-     * runs the link-state routing algorithm.
+     * prepares to start the link-state routing algorithm round.
+     * @return - a semaphore that is used to signal the manager that all nodes have finished their run.
+     */
+    private Semaphore prepareToStartRound() {
+        // create a semaphore for the nodes to signal when they've finished the round
+        // and instruct them to start listening to their neighbor nodes.
+        Semaphore signal = new Semaphore(1 - this.numOfNodes);
+        for (int id = 1; id <= this.numOfNodes; id++) {
+            this.nodes.get(id).setFinishRoundSignal(signal);
+            this.nodes.get(id).establishConnections();
+        }
+
+        // now that all listen ports are up, set all the send-port locks to ensure mutual exclusion.
+        for (int id = 1; id <= this.numOfNodes; id++) {
+            this.nodes.get(id).setSendPortLocks();
+        }
+        return signal;
+    }
+
+    /**
+     * prepares to finish the link-state routing algorithm round.
+     */
+    private void prepareToFinishRound(HashMap<Integer, Thread> nodeThreads) {
+        // wait until all node threads are finished.
+        for (int id = 1; id <= this.numOfNodes; id++) {
+            try {
+                nodeThreads.get(id).join();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+
+        // once all node threads are finished,
+        // we know that they all received the link states from all other nodes in the network,
+        // so we can safely instruct them to stop listening to their neighbor nodes before exiting.
+        for (int id = 1; id <= this.numOfNodes; id++) {
+            this.nodes.get(id).terminateConnections();
+        }
+    }
+
+    /**
+     * starts the link-state routing algorithm.
      */
     public void start() {
-        try {
-            for (int id = 1; id <= this.numOfNodes; id++) {
-                this.nodes.get(id).start();
-            }
 
-            for (int id = 1; id <= this.numOfNodes; id++) {
-                this.nodes.get(id).join();
-            }
-        } catch (InterruptedException ignored) {}
+        this.roundNumber += 1;
+
+        Semaphore finishSignal = prepareToStartRound();
+
+        // start the round by creating thread instances of the nodes for the current round and calling "start".
+        HashMap<Integer, Thread> nodeThreads = new HashMap<>();
+        for (int id = 1; id <= this.numOfNodes; id++) {
+            Thread nodeThread = new Thread(this.nodes.get(id));
+            nodeThreads.put(id, nodeThread);
+            nodeThread.start();
+        }
+
+
+        // wait until all nodes signal that they are finished
+        try {
+            finishSignal.acquire();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        prepareToFinishRound(nodeThreads);
+
+        System.out.println("==================== Finished Round " + roundNumber + " ====================");
     }
 
     public void terminate(){
