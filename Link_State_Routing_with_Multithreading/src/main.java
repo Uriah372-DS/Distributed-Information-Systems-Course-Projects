@@ -4,12 +4,13 @@ import java.util.Scanner;
 
 public class main {
     public static void main(String[] args) throws FileNotFoundException {
+        String pref = "Link_State_Routing_with_Multithreading/src/tests/";
         String[] paths = {
-                "C:\\Users\\user\\Desktop\\GitHub Repos and Clones\\Courses\\Distributed-Information-Systems-Course-Projects\\Link_State_Routing_with_Multithreading\\src\\tests\\input_1.txt",
-                "C:\\Users\\user\\Desktop\\GitHub Repos and Clones\\Courses\\Distributed-Information-Systems-Course-Projects\\Link_State_Routing_with_Multithreading\\src\\tests\\input_2.txt",
-                "C:\\Users\\user\\Desktop\\GitHub Repos and Clones\\Courses\\Distributed-Information-Systems-Course-Projects\\Link_State_Routing_with_Multithreading\\src\\tests\\input_3.txt",
-                "C:\\Users\\user\\Desktop\\GitHub Repos and Clones\\Courses\\Distributed-Information-Systems-Course-Projects\\Link_State_Routing_with_Multithreading\\src\\tests\\input_4.txt",
-                "C:\\Users\\user\\Desktop\\GitHub Repos and Clones\\Courses\\Distributed-Information-Systems-Course-Projects\\Link_State_Routing_with_Multithreading\\src\\tests\\input_5.txt"};
+                pref + "input_1.txt",
+                pref + "input_2.txt",
+                pref + "input_3.txt",
+                pref + "input_4.txt",
+                pref + "input_5.txt"};
         for(String path: paths) {
             ExManager m = new ExManager(path);
             m.read_txt();

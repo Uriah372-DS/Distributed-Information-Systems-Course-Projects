@@ -3,13 +3,12 @@ import java.io.*;
 
 enum TYPES {BROADCAST, PRIVATE, ACKNOWLEDGEMENT}
 
-public class Message<T, V> extends Pair<T, V> implements Serializable {
+public class Message implements Serializable {
 
-    public T type;
-    private V content;
+    public TYPES type;
+    private HashMap<String, Serializable> content;
 
-    public Message(T type, V content) {
-        super(type, content);
+    public Message(TYPES type, HashMap<String, Serializable> content) {
         this.type = type;
         this.content = content;
     }
@@ -18,7 +17,7 @@ public class Message<T, V> extends Pair<T, V> implements Serializable {
      * return the content of this completely safe and un-secure message. why, DO YOU HAVE ANYTHING TO HIDE?
      * @return - value of "content" attribute of this message instance.
      */
-    public V getContent() {
+    public HashMap<String, Serializable> getContent() {
         if (type == TYPES.BROADCAST || type == TYPES.ACKNOWLEDGEMENT) return content;
         else return null;
     }
@@ -37,7 +36,7 @@ public class Message<T, V> extends Pair<T, V> implements Serializable {
      * @return - the message content, hopefully...
      */
     @SuppressWarnings("unused")
-    public V getContent(int nodeAddress) {
+    public HashMap<String, Serializable> getContent(int nodeAddress) {
         if ((type == TYPES.BROADCAST))
             return content;
         else

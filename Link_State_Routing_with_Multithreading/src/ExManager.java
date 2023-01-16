@@ -1,6 +1,6 @@
 import java.io.*;
 import java.util.*;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.CountDownLatch;
 
 public class ExManager {
     private final String path;
@@ -85,53 +85,26 @@ public class ExManager {
 
     /**
      * prepares to start the link-state routing algorithm round.
-     * @return - a semaphore that is used to signal the manager that all nodes have finished their run.
      */
-    private Semaphore prepareToStartRound() {
+    private CountDownLatch prepareToStartRound() {
         // create a semaphore for the nodes to signal when they've finished the round
         // and instruct them to start listening to their neighbor nodes.
-        Semaphore signal = new Semaphore(1 - this.numOfNodes);
+        CountDownLatch finishRoundSignal = new CountDownLatch(this.numOfNodes);
         for (int id = 1; id <= this.numOfNodes; id++) {
-            this.nodes.get(id).setFinishRoundSignal(signal);
+            this.nodes.get(id).setFinishRoundSignal(finishRoundSignal);
             this.nodes.get(id).establishConnections();
         }
 
-        // now that all listen ports are up, set all the send-port locks to ensure mutual exclusion.
-        for (int id = 1; id <= this.numOfNodes; id++) {
-            this.nodes.get(id).setSendPortLocks();
-        }
-        return signal;
+        return finishRoundSignal;
     }
-
     /**
-     * prepares to finish the link-state routing algorithm round.
-     */
-    private void prepareToFinishRound(HashMap<Integer, Thread> nodeThreads) {
-        // wait until all node threads are finished.
-        for (int id = 1; id <= this.numOfNodes; id++) {
-            try {
-                nodeThreads.get(id).join();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
-
-        // once all node threads are finished,
-        // we know that they all received the link states from all other nodes in the network,
-        // so we can safely instruct them to stop listening to their neighbor nodes before exiting.
-        for (int id = 1; id <= this.numOfNodes; id++) {
-            this.nodes.get(id).terminateConnections();
-        }
-    }
-
-    /**
-     * starts the link-state routing algorithm.
+     * the entire link-state routing algorithm.
      */
     public void start() {
 
         this.roundNumber += 1;
 
-        Semaphore finishSignal = prepareToStartRound();
+        CountDownLatch finishRoundSignal = prepareToStartRound();
 
         // start the round by creating thread instances of the nodes for the current round and calling "start".
         HashMap<Integer, Thread> nodeThreads = new HashMap<>();
@@ -141,18 +114,40 @@ public class ExManager {
             nodeThread.start();
         }
 
-
-        // wait until all nodes signal that they are finished
+        // wait until all nodes signal that they are finished running the link state round locally.
         try {
-            finishSignal.acquire();
+            finishRoundSignal.await();
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
 
-        prepareToFinishRound(nodeThreads);
+        // wait until all node threads are finished.
+        for (int id = 1; id <= this.numOfNodes; id++) {
+            try {
+                nodeThreads.get(id).join();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+
+        prepareToFinishRound();
 
         System.out.println("==================== Finished Round " + roundNumber + " ====================");
     }
+
+    /**
+     * prepares to finish the link-state routing algorithm round.
+     */
+    private void prepareToFinishRound() {
+
+        // once all node threads are finished,
+        // we know that they all received the link states from all other nodes in the network,
+        // so we can safely instruct them to stop listening to their neighbor nodes before exiting.
+        for (int id = 1; id <= this.numOfNodes; id++) {
+            this.nodes.get(id).terminateConnections();
+        }
+    }
+
 
     public void terminate(){
         // your code here

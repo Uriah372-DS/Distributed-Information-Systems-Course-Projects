@@ -1,7 +1,7 @@
 import java.io.*;
 import java.net.*;
 import java.util.*;
-import java.util.concurrent.Semaphore;  // still from java.util
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class Node implements Runnable {
@@ -11,12 +11,13 @@ public class Node implements Runnable {
     private  int roundNumber;
     private boolean establishedConnections;
     private HashMap<Integer, PortListener> portListeners;
-    private HashMap<Integer, ReentrantLock> sendPortLocks;
     public Double[][] adjacencyMatrix;
     public HashMap<Integer, HashMap<String, Number>> NeighborsTable;
     public Map<Integer, Integer> SequenceCounter;
-    private Semaphore listenerSignal;
-    private Semaphore finishRoundSignal;
+    private CountDownLatch listenerSignal;
+    private CountDownLatch finishRoundSignal;
+    private final ReentrantLock sendLock;
+    private final ReentrantLock floodingLock;
 
     /**
      * Construct a single Node in the network.
@@ -32,8 +33,15 @@ public class Node implements Runnable {
         this.numOfNodes = numOfNodes;
         this.NeighborsTable = NeighborsTable;
         this.roundNumber = 0;
-        initializeSequenceCounter();
         this.establishedConnections = false;
+        this.sendLock = new ReentrantLock();
+        this.floodingLock = new ReentrantLock();
+        // initialize SequenceCounter
+        this.SequenceCounter = Collections.synchronizedMap(new HashMap<>());
+        for (int id = 1; id <= this.numOfNodes; id++) {
+            this.SequenceCounter.put(id, 0);
+        }
+        this.SequenceCounter.put(nodeID, nodeID);
 
         // initialize the fields of the routing table, assume they will be filled later in the run.
         this.adjacencyMatrix = new Double[this.numOfNodes][this.numOfNodes];
@@ -52,20 +60,8 @@ public class Node implements Runnable {
         }
     }
 
-    public void setSendPortLocks() {
-        sendPortLocks = new HashMap<>();
-        for (int id : NeighborsTable.keySet()) {
-            int sendPort = (Integer) NeighborsTable.get(id).get("send port");
-            sendPortLocks.put(sendPort, new ReentrantLock());
-        }
-    }
-
-    public synchronized void initializeSequenceCounter() {
-        this.SequenceCounter = Collections.synchronizedMap(new HashMap<>());
-        for (int id = 1; id <= this.numOfNodes; id++) {
-            this.SequenceCounter.put(id, 0);
-        }
-        this.SequenceCounter.put(nodeID, nodeID);
+    public void setFinishRoundSignal(CountDownLatch finishRoundSignal) {
+        this.finishRoundSignal = finishRoundSignal;
     }
 
     public HashSet<Pair<Pair<Integer, Integer>, Double>> createLinkStates() {
@@ -87,10 +83,6 @@ public class Node implements Runnable {
         return linkStates;
     }
 
-    public void setFinishRoundSignal(Semaphore finishRoundSignal) {
-        this.finishRoundSignal = finishRoundSignal;
-    }
-
     public void updateWeight(int neighborId, Number newWeight) {
         NeighborsTable.get(neighborId).put("weight", newWeight);
         adjacencyMatrix[this.nodeID - 1][neighborId - 1] = (Double) newWeight;
@@ -98,48 +90,63 @@ public class Node implements Runnable {
     }
 
     public void establishConnections() {
+        if (this.establishedConnections) return;
 
-        // use semaphore to make the node wait until it receives a message from all other nodes in the network.
-        this.listenerSignal = new Semaphore(2 - this.numOfNodes);
+        // use CountDownLatch to make the node wait until it receives a message from all other nodes in the network.
+        this.listenerSignal = new CountDownLatch(this.numOfNodes - 1);
+        CountDownLatch initiatedAndListening = new CountDownLatch(NeighborsTable.size());
+        CountDownLatch signalClosed = new CountDownLatch(NeighborsTable.size());
 
         // initialize a port listener for every neighbor to establish communication
         portListeners = new HashMap<>();
         for (int neighborId : this.NeighborsTable.keySet()) {
-            int neighborPort = (Integer)(this.NeighborsTable.get(neighborId).get("listen port"));
-            this.portListeners.put(neighborId, new PortListener(neighborPort, this, listenerSignal));
+            int neighborPort = (Integer) (this.NeighborsTable.get(neighborId).get("listen port"));
+            this.portListeners.put(neighborId, new PortListener(neighborPort, this,
+                    initiatedAndListening, signalClosed));
         }
 
         // start all PortListener threads
         for (PortListener listener : portListeners.values()) { listener.start(); }
 
         // validate that they are all actually listening
-        boolean allListening = false;
-        while (!allListening) {
-            allListening = true;
-            for (PortListener listener : portListeners.values()) {
-                allListening = allListening && listener.isListening;
-            }
+        try {
+            initiatedAndListening.await();
+        } catch (InterruptedException e) {
+            for (PortListener listener : portListeners.values()) { listener.close(); }
+            e.printStackTrace();
         }
 
         this.establishedConnections = true;
-        //System.out.println("node " + this.nodeID + " connections established!");
+        System.out.println("node " + this.nodeID + " connections established!");
     }
 
     public void terminateConnections() {
         if (!this.establishedConnections) return;
 
-        for (PortListener listener : portListeners.values()) {
-            try {
-                listener.stopListening();
-                listener.join();
-            } catch (InterruptedException ignore) { }
-        }
+        for (PortListener listener : portListeners.values()) { listener.close(); }
+
         this.establishedConnections = false;
-        //System.out.println("node " + this.nodeID + " connections terminated!");
+        System.out.println("node " + this.nodeID + " connections terminated!");
 
     }
-    public synchronized void updateNodeInfo(HashMap<String, Serializable> msgContent) {
 
+    public void floodingWithSequenceNumbers(Message msg, int clientHandlerPort) {
+        floodingLock.lock();
+        boolean flag;
+        if (msg.type == TYPES.BROADCAST) {
+            HashMap<String, Serializable> msgContent = msg.getContent();
+            Integer source = (Integer) msgContent.get("Source");
+            flag = (Integer) msgContent.get("Sequence") > this.SequenceCounter.get(source);
+            if (flag) {
+                updateNodeInfo(msgContent);
+                broadcast(msg, clientHandlerPort);
+            }
+        } else {
+            throw new WTFException("There shouldn't be any " + msg.type + " messages in this network...");
+        }
+        floodingLock.unlock();
+    }
+    public void updateNodeInfo(HashMap<String, Serializable> msgContent) {
         // System.out.println("node " + this.nodeID + " has received a message from node " + msgContent.get("Source"));
         // update the node's SequenceCounter with the new message's sequence field
         this.SequenceCounter.put((Integer) msgContent.get("Source"), (Integer) msgContent.get("Sequence"));
@@ -157,7 +164,7 @@ public class Node implements Runnable {
         }
         // after updating the data with the received link state,
         // we signal it to the node and update the set of updated nodes
-        this.listenerSignal.release();
+        this.listenerSignal.countDown();
     }
 
     /**
@@ -165,24 +172,29 @@ public class Node implements Runnable {
      * @param msg - the message.
      * @param port - the port.
      */
-    public synchronized void send(Message<TYPES, HashMap<String, Serializable>> msg, int port) {
+    public void send(Message msg, int port) {
+
         Socket socket = null;
         ObjectOutputStream output = null;
         ObjectInputStream input = null;
         try {
             socket = new Socket("localhost", port);
+            // for debugging
+            socket.setSoLinger(false, 0);
             output = new ObjectOutputStream(new DataOutputStream(socket.getOutputStream()));
             output.flush();
             // need to open ObjectInputStream to avoid aborted connections
             input = new ObjectInputStream(new DataInputStream(socket.getInputStream()));
             output.writeObject(msg);
-        } catch (ConnectException ignore) {
-            System.out.println("ConnectException in node " + nodeID + " when attempting to connect to port " + port);
-        } catch (BindException e) {
-            System.out.println("BindException in node " + nodeID + " when attempting to connect to port " + port);
+        } catch (ConnectException | BindException e) {
+            System.out.println(e.getClass().getName() + " in node " + nodeID
+                    + " when attempting to connect to port " + port);
+        } catch (EOFException | SocketException ignore) {
+
         } catch (IOException e) {
             e.printStackTrace();
         } finally {
+
             try {
                 if (socket != null) {
                     socket.close();
@@ -197,9 +209,10 @@ public class Node implements Runnable {
                 e.printStackTrace();
             }
         }
+
     }
 
-    public synchronized void broadcast(Message<TYPES, HashMap<String, Serializable>> msg, int clientPort) {
+    public void broadcast(Message msg, int clientPort) {
 
         // forward link states to all neighbors except the neighbor from which this message was received
         for (Integer neighborId : this.NeighborsTable.keySet()) {
@@ -219,26 +232,25 @@ public class Node implements Runnable {
                 newMsgContent.put("Source", msgContent.get("Source"));
                 newMsgContent.put("Sequence", msgContent.get("Sequence"));
                 newMsgContent.put("LinkStates", msgContent.get("LinkStates"));
-                Message<TYPES, HashMap<String, Serializable>> newMsg = new Message<>(msgType, newMsgContent);
+                Message newMsg = new Message(msgType, newMsgContent);
 
                 // send link state message to this neighbor
-                //System.out.println("node " + nodeID + " sends message to node " + neighborId + " through port " + sendPort);
-                ReentrantLock portLock = sendPortLocks.get(sendPort);
-                portLock.lock();
+//                System.out.println("node " + nodeID + " sends message to node " + neighborId + " through port " + sendPort);
+                sendLock.lock();
                 this.send(newMsg, sendPort);
-                portLock.unlock();
+                sendLock.unlock();
             }
         }
     }
 
-    private synchronized void initBroadcast(HashSet<Pair<Pair<Integer, Integer>, Double>> linkStates) {
+    private void initBroadcast(HashSet<Pair<Pair<Integer, Integer>, Double>> linkStates) {
         // create a Message instance to broadcast from this node
         TYPES msgType = TYPES.BROADCAST;
         HashMap<String, Serializable> msgContent = new HashMap<>();
         msgContent.put("Source", this.nodeID);
         msgContent.put("Sequence", this.roundNumber);
         msgContent.put("LinkStates", linkStates);
-        Message<TYPES, HashMap<String, Serializable>> msg = new Message<>(msgType, msgContent);
+        Message msg = new Message(msgType, msgContent);
         broadcast(msg, -1);
     }
 
@@ -250,7 +262,7 @@ public class Node implements Runnable {
         linkStateRound();
 
         // signal to manager that this node has finished its round.
-        this.finishRoundSignal.release();
+        this.finishRoundSignal.countDown();
     }
     private void linkStateRound() {
         // create the local link state of the node
@@ -261,7 +273,7 @@ public class Node implements Runnable {
 
         // wait until link states from all other n - 1 nodes have been received
         try {
-            listenerSignal.acquire();
+            listenerSignal.await();
             // System.out.println("node number " + nodeID + " has received " + (this.numOfNodes - 1) + " messages");
         } catch (InterruptedException e) {
             e.printStackTrace();

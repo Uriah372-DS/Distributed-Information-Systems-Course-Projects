@@ -1,68 +1,81 @@
 import java.io.*;
 import java.net.*;
-import java.util.*;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.*;
 
-
-class PortListener extends Thread {
+class PortListener extends Thread implements Closeable {
     public int port;
-    private ServerSocket serverSocket;
-    protected boolean isRunning;  // used as a flag to signal this PortListener to start or stop running
-    protected boolean isListening;  // used as a flag to signal the node that this port is listening
     private final Node node;
-    private final Semaphore listenerSignal;
+    private final ConcurrentLinkedDeque<ClientHandler> clientHandlers;
+    private final CountDownLatch initiatedAndListening;
+    private final CountDownLatch signalClosed;
+    private ServerSocket serverSocket;
 
-    PortListener(int port, Node node, Semaphore listenerSignal) {
+    PortListener(int port, Node node, CountDownLatch initiatedAndListening, CountDownLatch signalClosed) {
         this.port = port;
         this.node = node;
-        this.listenerSignal = listenerSignal;
-        this.isRunning = false;
+        this.clientHandlers = new ConcurrentLinkedDeque<>();
+        this.initiatedAndListening = initiatedAndListening;
+        this.signalClosed = signalClosed;
     }
 
-    public void startListening() {
-        this.isRunning = true;
-    }
+    public void close(){
 
-    public void stopListening(){
-        this.isRunning = false;
+        this.interrupt();  // always permitted
         try {
-            serverSocket.close();
-        } catch (SocketException ignore) {
-            //System.out.println("PortListener on port" + this.port + " successfully interrupted the ServerSocket");
-        } catch (IOException e) {
-            e.printStackTrace();
+            if (serverSocket != null && !serverSocket.isClosed())
+                serverSocket.close();
+        } catch (IOException ignore) {
+            System.out.println("IOException while closing server socket in port listener "
+                    + port + " in node " + node.nodeID);
         }
+        for (ClientHandler clientHandler : clientHandlers) { clientHandler.close(); }
+        //noinspection LoopConditionNotUpdatedInsideLoop,StatementWithEmptyBody
+        while (!clientHandlers.isEmpty());
+        signalClosed.countDown();
     }
 
     @Override
     public void run() {
         serverSocket = null;
+        ClientHandler clientHandler = null;
         try {
-            serverSocket = new ServerSocket(this.port);
-            this.isListening = true;
+            serverSocket = new ServerSocket();
+            serverSocket.setReuseAddress(true);
+            serverSocket.bind(new InetSocketAddress(this.port));
+            this.initiatedAndListening.countDown();
 
-            startListening();
-            while(this.isRunning) {
+            while (!Thread.currentThread().isInterrupted()) {
 
-                Socket clientSocket = serverSocket.accept();  // blocks until message is received
+                Socket clientSocket = serverSocket.accept();  // blocking
 
-                ClientHandler clientHandler = new ClientHandler(clientSocket, this.node, listenerSignal);
+                clientHandler = new ClientHandler(clientSocket, this.node, clientHandlers);
+                clientHandlers.add(clientHandler);
                 clientHandler.start();
             }
-            serverSocket.close();
-        } catch (SocketTimeoutException ignore) {
-            //System.out.println("Socket timed out at port " + this.port + " in node " + this.node.nodeID);
-        } catch (SocketException ignore) {
-            //System.out.println("ServerSocket in port " + this.port + " closed by interruption in node " + node.nodeID);
-        } catch (IOException e) {
-            //System.out.println("IOException at port " + this.port + " in node " + this.node.nodeID);
+        }
+        catch (SocketException e) {
+            System.out.println("ServerSocket threw SocketException at port "
+                    + this.port + " in node " + node.nodeID);
+        }
+        catch (InterruptedIOException e) {
+            System.out.println("ServerSocket.accept() threw InterruptedIOException at port "
+                    + this.port + " in node " + this.node.nodeID);
+        }
+        catch (IOException e) {
+            System.out.println("ServerSocket threw IOException at port "
+                    + this.port + " in node " + this.node.nodeID);
             e.printStackTrace();
-        }  finally {
+        }
+        finally {
             try {
-                if (serverSocket != null)
+                if (serverSocket != null && !serverSocket.isClosed())
                     serverSocket.close();
-            } catch (IOException e) {
-                //System.out.println("IOException while trying to close serverSocket at port " + this.port + " in node " + this.node.nodeID);
+                if (clientHandler != null && clientHandler.isAlive())
+                    clientHandler.interrupt();
+            }
+            catch (IOException e) {
+                System.out.println("IOException while trying to close serverSocket at port "
+                        + this.port + " in node " + this.node.nodeID);
                 e.printStackTrace();
             }
         }
@@ -72,50 +85,40 @@ class PortListener extends Thread {
 class ClientHandler extends Thread {
     final Socket socket;
     final Node node;
-    final Semaphore listenerSignal;
-    ClientHandler(Socket socket, Node node, Semaphore listenerSignal) {
+    final ConcurrentLinkedDeque<ClientHandler> clientHandlers;
+
+    ClientHandler(Socket socket, Node node, ConcurrentLinkedDeque<ClientHandler> clientHandlers) {
         this.socket = socket;
         this.node = node;
-        this.listenerSignal = listenerSignal;
+        this.clientHandlers = clientHandlers;
     }
 
     public void run() {
-        ObjectInputStream input = null;
-        ObjectOutputStream output = null;
         try {
-            input = new ObjectInputStream(new DataInputStream(this.socket.getInputStream()));
-            output = new ObjectOutputStream(new DataOutputStream(this.socket.getOutputStream()));
+            ObjectInputStream input = new ObjectInputStream(new DataInputStream(this.socket.getInputStream()));
+            // creating an ObjectOutputStream is mandatory for ObjectInputStream validity check
+            new ObjectOutputStream(new DataOutputStream(this.socket.getOutputStream()));
             Object msgObject = input.readObject();
-            //noinspection unchecked
-            Message<TYPES, HashMap<String, Serializable>> msg =
-                    (Message<TYPES, HashMap<String, Serializable>>) msgObject;
-            if (msg.type == TYPES.BROADCAST) {
-                HashMap<String, Serializable> msgContent = msg.getContent();
-                Integer source = (Integer) msgContent.get("Source");
-                synchronized (this.node) {
-                    if ((Integer) msgContent.get("Sequence") > this.node.SequenceCounter.get(source)) {
-                        this.node.broadcast(msg, this.socket.getPort());
-                        this.node.updateNodeInfo(msgContent);
-                    }
-                }
-            } else {
-                throw new WTFException("There shouldn't be any " + msg.type + " messages in this network!");
-            }
-        } catch (NumberFormatException | EOFException ignore) {
+            Message msg = (Message) msgObject;
+            this.node.floodingWithSequenceNumbers(msg, socket.getPort());
+        } catch (NumberFormatException | EOFException | SocketException ignore) {
 
         } catch (ClassNotFoundException | IOException e) {
             e.printStackTrace();
         } finally {
-            try {
-                if (input != null)
-                    input.close();
-                if (output != null)
-                    output.close();
-                this.socket.close();
-            } catch (IOException e) {
-                //System.out.println("IOException while trying to close input, output, or socket in ClientHandler");
-                e.printStackTrace();
-            }
+            close();
+        }
+    }
+
+    public void close() {
+        this.interrupt();
+        try {
+            this.socket.close();
+        } catch (IOException e) {
+            System.out.println("IOException while trying to close socket in ClientHandler");
+            e.printStackTrace();
+        } finally {
+            clientHandlers.remove(this);
         }
     }
 }
