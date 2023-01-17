@@ -1,11 +1,11 @@
 import java.io.*;
 import java.net.*;
+import java.util.Objects;
 import java.util.concurrent.*;
 
 class PortListener extends Thread implements Closeable {
     public int port;
     private final Node node;
-    private final ConcurrentLinkedDeque<ClientHandler> clientHandlers;
     private final CountDownLatch initiatedAndListening;
     private final CountDownLatch signalClosed;
     private ServerSocket serverSocket;
@@ -13,7 +13,7 @@ class PortListener extends Thread implements Closeable {
     PortListener(int port, Node node, CountDownLatch initiatedAndListening, CountDownLatch signalClosed) {
         this.port = port;
         this.node = node;
-        this.clientHandlers = new ConcurrentLinkedDeque<>();
+//        this.clientHandlers = new ConcurrentLinkedDeque<>();
         this.initiatedAndListening = initiatedAndListening;
         this.signalClosed = signalClosed;
     }
@@ -28,43 +28,55 @@ class PortListener extends Thread implements Closeable {
             System.out.println("IOException while closing server socket in port listener "
                     + port + " in node " + node.nodeID);
         }
-        for (ClientHandler clientHandler : clientHandlers) { clientHandler.close(); }
-        //noinspection LoopConditionNotUpdatedInsideLoop,StatementWithEmptyBody
-        while (!clientHandlers.isEmpty());
+
         signalClosed.countDown();
     }
 
     @Override
     public void run() {
+//        Thread.currentThread().setPriority(7);
         serverSocket = null;
         ClientHandler clientHandler = null;
         try {
             serverSocket = new ServerSocket();
+        } catch (IOException e) {
+            System.out.println("Random IOException while creating serverSocket at port "
+                    + port + " in node " + node.nodeID);
+            close();
+        }
+        try {
             serverSocket.setReuseAddress(true);
+        } catch (SocketException e) {
+            System.out.println("SocketException while calling serverSocket.setReuseAddress(true) at port "
+                    + port + " in node " + node.nodeID);
+        }
+        try {
             serverSocket.bind(new InetSocketAddress(this.port));
-            this.initiatedAndListening.countDown();
-
-            while (!Thread.currentThread().isInterrupted()) {
+        } catch (IOException e) {
+            System.out.println("IOException while calling serverSocket.bind(new InetSocketAddress(this.port)) at port "
+                    + port + " in node " + node.nodeID);
+            e.printStackTrace();
+        }
+        //noinspection StatementWithEmptyBody
+        while (serverSocket.isClosed()) {}
+        initiatedAndListening.countDown();  // signal the node.
+        try {
+            while (!Thread.currentThread().isInterrupted() &&
+                    !serverSocket.isClosed() &&
+                    serverSocket.isBound()) {
 
                 Socket clientSocket = serverSocket.accept();  // blocking
 
-                clientHandler = new ClientHandler(clientSocket, this.node, clientHandlers);
-                clientHandlers.add(clientHandler);
+                clientHandler = new ClientHandler(clientSocket, this.node);
+//                clientHandlers.add(clientHandler);
                 clientHandler.start();
             }
         }
-        catch (SocketException e) {
-            System.out.println("ServerSocket threw SocketException at port "
-                    + this.port + " in node " + node.nodeID);
-        }
-        catch (InterruptedIOException e) {
-            System.out.println("ServerSocket.accept() threw InterruptedIOException at port "
-                    + this.port + " in node " + this.node.nodeID);
-        }
         catch (IOException e) {
-            System.out.println("ServerSocket threw IOException at port "
-                    + this.port + " in node " + this.node.nodeID);
-            e.printStackTrace();
+
+            if (!Objects.equals(e.getMessage(), "Socket closed"))
+                System.out.println("ServerSocket.accept() threw " + e.getClass().getName() + " at port "
+                        + this.port + " in node " + this.node.nodeID + " - Exception Message: " + e.getMessage());
         }
         finally {
             try {
@@ -85,22 +97,25 @@ class PortListener extends Thread implements Closeable {
 class ClientHandler extends Thread {
     final Socket socket;
     final Node node;
-    final ConcurrentLinkedDeque<ClientHandler> clientHandlers;
+//    final ConcurrentLinkedDeque<ClientHandler> clientHandlers;
 
-    ClientHandler(Socket socket, Node node, ConcurrentLinkedDeque<ClientHandler> clientHandlers) {
+    ClientHandler(Socket socket, Node node) {
         this.socket = socket;
         this.node = node;
-        this.clientHandlers = clientHandlers;
+//        this.clientHandlers = clientHandlers;
     }
 
     public void run() {
+        ObjectInputStream input;
         try {
-            ObjectInputStream input = new ObjectInputStream(new DataInputStream(this.socket.getInputStream()));
+            input = new ObjectInputStream(this.socket.getInputStream());
             // creating an ObjectOutputStream is mandatory for ObjectInputStream validity check
-            new ObjectOutputStream(new DataOutputStream(this.socket.getOutputStream()));
-            Object msgObject = input.readObject();
-            Message msg = (Message) msgObject;
-            this.node.floodingWithSequenceNumbers(msg, socket.getPort());
+            new ObjectOutputStream(this.socket.getOutputStream());
+            // process the message
+            Message msg = (Message) input.readObject();
+            if (msg.getType() == TYPES.BROADCAST) {
+                this.node.floodingWithSequenceNumbers(msg, socket.getPort());
+            }
         } catch (NumberFormatException | EOFException | SocketException ignore) {
 
         } catch (ClassNotFoundException | IOException e) {
@@ -117,14 +132,6 @@ class ClientHandler extends Thread {
         } catch (IOException e) {
             System.out.println("IOException while trying to close socket in ClientHandler");
             e.printStackTrace();
-        } finally {
-            clientHandlers.remove(this);
         }
-    }
-}
-
-class WTFException extends RuntimeException {
-    public WTFException(String errorMessage) {
-        super(errorMessage);
     }
 }

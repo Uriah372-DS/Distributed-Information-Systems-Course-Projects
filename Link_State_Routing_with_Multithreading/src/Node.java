@@ -127,25 +127,22 @@ public class Node implements Runnable {
 
         this.establishedConnections = false;
         System.out.println("node " + this.nodeID + " connections terminated!");
-
     }
 
     public void floodingWithSequenceNumbers(Message msg, int clientHandlerPort) {
         floodingLock.lock();
-        boolean flag;
-        if (msg.type == TYPES.BROADCAST) {
-            HashMap<String, Serializable> msgContent = msg.getContent();
-            Integer source = (Integer) msgContent.get("Source");
-            flag = (Integer) msgContent.get("Sequence") > this.SequenceCounter.get(source);
-            if (flag) {
-                updateNodeInfo(msgContent);
-                broadcast(msg, clientHandlerPort);
-            }
-        } else {
-            throw new WTFException("There shouldn't be any " + msg.type + " messages in this network...");
+        HashMap<String, Serializable> msgContent = msg.getContent();
+        Integer source = (Integer) msgContent.get("Source");
+        Integer msgSequenceNumber = (Integer) msgContent.get("Sequence");
+        if (msgSequenceNumber > SequenceCounter.get(source)) {
+            updateNodeInfo(msgContent);
+            broadcast(msg, clientHandlerPort);
+            // after updating the data with the new link state, we signal it to the node
+            this.listenerSignal.countDown();
         }
         floodingLock.unlock();
     }
+
     public void updateNodeInfo(HashMap<String, Serializable> msgContent) {
         // System.out.println("node " + this.nodeID + " has received a message from node " + msgContent.get("Source"));
         // update the node's SequenceCounter with the new message's sequence field
@@ -162,9 +159,6 @@ public class Node implements Runnable {
             this.adjacencyMatrix[nodeID1 - 1][nodeID2 - 1] = weight;
             this.adjacencyMatrix[nodeID2 - 1][nodeID1 - 1] = weight;
         }
-        // after updating the data with the received link state,
-        // we signal it to the node and update the set of updated nodes
-        this.listenerSignal.countDown();
     }
 
     /**
@@ -175,41 +169,31 @@ public class Node implements Runnable {
     public void send(Message msg, int port) {
 
         Socket socket = null;
-        ObjectOutputStream output = null;
-        ObjectInputStream input = null;
+        ObjectOutputStream output;
         try {
             socket = new Socket("localhost", port);
-            // for debugging
-            socket.setSoLinger(false, 0);
-            output = new ObjectOutputStream(new DataOutputStream(socket.getOutputStream()));
-            output.flush();
-            // need to open ObjectInputStream to avoid aborted connections
-            input = new ObjectInputStream(new DataInputStream(socket.getInputStream()));
+
+            output = new ObjectOutputStream(socket.getOutputStream());
+            // need to open an ObjectInputStream to avoid aborted connections
+            new ObjectInputStream(socket.getInputStream());
             output.writeObject(msg);
+            output.flush();
         } catch (ConnectException | BindException e) {
             System.out.println(e.getClass().getName() + " in node " + nodeID
-                    + " when attempting to connect to port " + port);
+                    + " when attempting to send a message to port " + port
+                    + " - Exception Message: " + e.getMessage());
         } catch (EOFException | SocketException ignore) {
 
         } catch (IOException e) {
             e.printStackTrace();
         } finally {
-
             try {
-                if (socket != null) {
+                if (socket != null)
                     socket.close();
-                }
-                if (output != null) {
-                    output.close();
-                }
-                if (input != null) {
-                    input.close();
-                }
             } catch (IOException e) {
                 e.printStackTrace();
             }
         }
-
     }
 
     public void broadcast(Message msg, int clientPort) {
@@ -226,7 +210,7 @@ public class Node implements Runnable {
                 // we create a Message instance to send to this neighbor node.
                 // we need to create a different instance for every port because threads use shared memory,
                 // so they could potentially access the same message instance (which is BAD).
-                TYPES msgType = msg.type;
+                TYPES msgType = msg.getType();
                 HashMap<String, Serializable> msgContent = msg.getContent();
                 HashMap<String, Serializable> newMsgContent = new HashMap<>();
                 newMsgContent.put("Source", msgContent.get("Source"));
@@ -235,7 +219,6 @@ public class Node implements Runnable {
                 Message newMsg = new Message(msgType, newMsgContent);
 
                 // send link state message to this neighbor
-//                System.out.println("node " + nodeID + " sends message to node " + neighborId + " through port " + sendPort);
                 sendLock.lock();
                 this.send(newMsg, sendPort);
                 sendLock.unlock();
@@ -243,7 +226,7 @@ public class Node implements Runnable {
         }
     }
 
-    private void initBroadcast(HashSet<Pair<Pair<Integer, Integer>, Double>> linkStates) {
+    private void broadcast(HashSet<Pair<Pair<Integer, Integer>, Double>> linkStates) {
         // create a Message instance to broadcast from this node
         TYPES msgType = TYPES.BROADCAST;
         HashMap<String, Serializable> msgContent = new HashMap<>();
@@ -256,10 +239,23 @@ public class Node implements Runnable {
 
     @Override
     public void run() {
+//        Thread.currentThread().setPriority(6);
 
         this.roundNumber += 1;
 
         linkStateRound();
+
+        // we look at this node's SequenceCounter,
+        // and check if all the sequence numbers in it are equal to roundNumber.
+        // this will indicate that the node has received all of its links and is ready to finish the round.
+        boolean allUpdated;
+        do {
+            allUpdated = true;
+            for (int id : SequenceCounter.keySet()) {
+                if (id != nodeID)
+                    allUpdated = allUpdated && (SequenceCounter.get(id) == roundNumber);
+            }
+        } while (!allUpdated);
 
         // signal to manager that this node has finished its round.
         this.finishRoundSignal.countDown();
@@ -269,7 +265,7 @@ public class Node implements Runnable {
         HashSet<Pair<Pair<Integer, Integer>, Double>> linkStates = createLinkStates();
 
         // broadcast the link state to all nodes in the network.
-        initBroadcast(linkStates);
+        broadcast(linkStates);
 
         // wait until link states from all other n - 1 nodes have been received
         try {

@@ -86,7 +86,7 @@ public class ExManager {
     /**
      * prepares to start the link-state routing algorithm round.
      */
-    private CountDownLatch prepareToStartRound() {
+    private CountDownLatch prepareToStart() {
         // create a semaphore for the nodes to signal when they've finished the round
         // and instruct them to start listening to their neighbor nodes.
         CountDownLatch finishRoundSignal = new CountDownLatch(this.numOfNodes);
@@ -104,7 +104,7 @@ public class ExManager {
 
         this.roundNumber += 1;
 
-        CountDownLatch finishRoundSignal = prepareToStartRound();
+        CountDownLatch finishRoundSignal = prepareToStart();
 
         // start the round by creating thread instances of the nodes for the current round and calling "start".
         HashMap<Integer, Thread> nodeThreads = new HashMap<>();
@@ -129,16 +129,12 @@ public class ExManager {
                 e.printStackTrace();
             }
         }
-
-        prepareToFinishRound();
-
-        System.out.println("==================== Finished Round " + roundNumber + " ====================");
     }
 
     /**
      * prepares to finish the link-state routing algorithm round.
      */
-    private void prepareToFinishRound() {
+    private void prepareToFinish() {
 
         // once all node threads are finished,
         // we know that they all received the link states from all other nodes in the network,
@@ -149,8 +145,8 @@ public class ExManager {
     }
 
 
-    public void terminate(){
-        // your code here
+    public void terminate() {
+        prepareToFinish();
+        System.out.println("==================== Finished Round " + roundNumber + " ====================\n");
     }
-
 }

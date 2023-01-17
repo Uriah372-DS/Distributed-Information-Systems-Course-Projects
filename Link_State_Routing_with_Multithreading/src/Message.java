@@ -1,16 +1,23 @@
 import java.util.*;
 import java.io.*;
 
-enum TYPES {BROADCAST, PRIVATE, ACKNOWLEDGEMENT}
+enum TYPES {BROADCAST, ACKNOWLEDGEMENT, PRIVATE}
 
 public class Message implements Serializable {
 
-    public TYPES type;
-    private HashMap<String, Serializable> content;
+    private final Pair<TYPES, HashMap<String, Serializable>> info;
 
     public Message(TYPES type, HashMap<String, Serializable> content) {
-        this.type = type;
-        this.content = content;
+        this.info = new Pair<>(type, content);
+    }
+
+    public Message(TYPES type) {
+        HashMap<String, Serializable> content = new HashMap<>();
+        this.info = new Pair<>(type, content);
+    }
+
+    public TYPES getType() {
+        return info.getKey();
     }
 
     /**
@@ -18,15 +25,8 @@ public class Message implements Serializable {
      * @return - value of "content" attribute of this message instance.
      */
     public HashMap<String, Serializable> getContent() {
-        if (type == TYPES.BROADCAST || type == TYPES.ACKNOWLEDGEMENT) return content;
+        if (info.getKey() == TYPES.BROADCAST || info.getKey() == TYPES.ACKNOWLEDGEMENT) return info.getValue();
         else return null;
-    }
-
-    /**
-     * @return - True if content contains an "address" field, False otherwise.
-     */
-    private Boolean hasAddress() {
-        return Arrays.stream(content.getClass().getFields()).anyMatch(f -> f.getName().equals("address"));
     }
 
     /**
@@ -37,24 +37,22 @@ public class Message implements Serializable {
      */
     @SuppressWarnings("unused")
     public HashMap<String, Serializable> getContent(int nodeAddress) {
-        if ((type == TYPES.BROADCAST))
-            return content;
+        if (info.getKey() == TYPES.BROADCAST)
+            return info.getValue();
         else
             try {
-                if (type == TYPES.PRIVATE
-                        && hasAddress()
-                        && content.getClass().getField("address").get(content).equals(nodeAddress)) {
-                    return content;
+                if (info.getKey() == TYPES.PRIVATE
+                        && info.getValue().get("Address").equals(nodeAddress)) {
+                    return info.getValue();
 
-            } else {
-                    System.out.println("Message: type: " + type + ", content: " + content +": " +
+                } else {
+                    System.out.println("Message: type - " + info.getKey() + ", content: " + info.getValue() + ": " +
                             "I was given wrong address. I will self-destruct now :(");
-                    type = null;
-                    content = null;
+                    info.setValue(null);
                     return null;
                 }
 
-        } catch (Exception ignored) {}  // covered by hasAddress function
+            } catch (Exception ignored) {}  // covered by hasAddress function
         return null;
     }
 }
