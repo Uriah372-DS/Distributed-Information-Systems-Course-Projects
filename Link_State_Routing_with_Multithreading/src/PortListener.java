@@ -4,6 +4,7 @@ import java.util.Objects;
 import java.util.concurrent.*;
 
 class PortListener extends Thread implements Closeable {
+
     public int port;
     private final Node node;
     private final CountDownLatch initiatedAndListening;
@@ -13,34 +14,18 @@ class PortListener extends Thread implements Closeable {
     PortListener(int port, Node node, CountDownLatch initiatedAndListening, CountDownLatch signalClosed) {
         this.port = port;
         this.node = node;
-//        this.clientHandlers = new ConcurrentLinkedDeque<>();
         this.initiatedAndListening = initiatedAndListening;
         this.signalClosed = signalClosed;
     }
 
-    public void close(){
-
-        this.interrupt();  // always permitted
-        try {
-            if (serverSocket != null && !serverSocket.isClosed())
-                serverSocket.close();
-        } catch (IOException ignore) {
-            System.out.println("IOException while closing server socket in port listener "
-                    + port + " in node " + node.nodeID);
-        }
-
-        signalClosed.countDown();
-    }
-
     @Override
     public void run() {
-//        Thread.currentThread().setPriority(7);
         serverSocket = null;
         ClientHandler clientHandler = null;
         try {
             serverSocket = new ServerSocket();
         } catch (IOException e) {
-            System.out.println("Random IOException while creating serverSocket at port "
+            System.out.println("IOException while creating serverSocket at port "
                     + port + " in node " + node.nodeID);
             close();
         }
@@ -57,8 +42,7 @@ class PortListener extends Thread implements Closeable {
                     + port + " in node " + node.nodeID);
             e.printStackTrace();
         }
-        //noinspection StatementWithEmptyBody
-        while (serverSocket.isClosed()) {}
+
         initiatedAndListening.countDown();  // signal the node.
         try {
             while (!Thread.currentThread().isInterrupted() &&
@@ -68,7 +52,6 @@ class PortListener extends Thread implements Closeable {
                 Socket clientSocket = serverSocket.accept();  // blocking
 
                 clientHandler = new ClientHandler(clientSocket, this.node);
-//                clientHandlers.add(clientHandler);
                 clientHandler.start();
             }
         }
@@ -92,17 +75,31 @@ class PortListener extends Thread implements Closeable {
             }
         }
     }
+
+    public void close(){
+        try {
+            this.interrupt();  // always permitted
+            if (serverSocket != null && !serverSocket.isClosed())
+                serverSocket.close();
+        } catch (SocketException ignore) { // (because it was blocked in accept()) while close() was called.
+            System.out.println("SocketException while closing server socket in port listener "
+                    + port + " in node " + node.nodeID);
+        } catch (IOException ignore) {
+            System.out.println("IOException while closing server socket in port listener "
+                    + port + " in node " + node.nodeID);
+        } finally {
+            signalClosed.countDown();
+        }
+    }
 }
 
-class ClientHandler extends Thread {
-    final Socket socket;
-    final Node node;
-//    final ConcurrentLinkedDeque<ClientHandler> clientHandlers;
+class ClientHandler extends Thread implements Closeable {
+    private final Socket socket;
+    private final Node node;
 
     ClientHandler(Socket socket, Node node) {
         this.socket = socket;
         this.node = node;
-//        this.clientHandlers = clientHandlers;
     }
 
     public void run() {

@@ -129,14 +129,14 @@ public class Node implements Runnable {
         System.out.println("node " + this.nodeID + " connections terminated!");
     }
 
-    public void floodingWithSequenceNumbers(Message msg, int clientHandlerPort) {
+    public void floodingWithSequenceNumbers(Message msg, int excludePort) {
         floodingLock.lock();
         HashMap<String, Serializable> msgContent = msg.getContent();
         Integer source = (Integer) msgContent.get("Source");
         Integer msgSequenceNumber = (Integer) msgContent.get("Sequence");
         if (msgSequenceNumber > SequenceCounter.get(source)) {
             updateNodeInfo(msgContent);
-            broadcast(msg, clientHandlerPort);
+            broadcast(msg, excludePort);
             // after updating the data with the new link state, we signal it to the node
             this.listenerSignal.countDown();
         }
@@ -196,29 +196,13 @@ public class Node implements Runnable {
         }
     }
 
-    public void broadcast(Message msg, int clientPort) {
+    public void broadcast(Message msg, Integer clientPort) {
 
-        // forward link states to all neighbors except the neighbor from which this message was received
         for (Integer neighborId : this.NeighborsTable.keySet()) {
-
-            int listenPort = (Integer) (this.NeighborsTable.get(neighborId).get("listen port"));
-            int sendPort = (Integer) (this.NeighborsTable.get(neighborId).get("send port"));
-
-            // I always forget which port is connected to which socket :(
-            // so I do this stupid check to avoid the need to look it up :)
-            if (listenPort != clientPort && sendPort != clientPort) {
-                // we create a Message instance to send to this neighbor node.
-                // we need to create a different instance for every port because threads use shared memory,
-                // so they could potentially access the same message instance (which is BAD).
-                TYPES msgType = msg.getType();
-                HashMap<String, Serializable> msgContent = msg.getContent();
-                HashMap<String, Serializable> newMsgContent = new HashMap<>();
-                newMsgContent.put("Source", msgContent.get("Source"));
-                newMsgContent.put("Sequence", msgContent.get("Sequence"));
-                newMsgContent.put("LinkStates", msgContent.get("LinkStates"));
-                Message newMsg = new Message(msgType, newMsgContent);
-
-                // send link state message to this neighbor
+            Integer sendPort = (Integer) (this.NeighborsTable.get(neighborId).get("send port"));
+            boolean sentFromThisNeighbor = clientPort.equals(sendPort);
+            if (sentFromThisNeighbor) {
+                Message newMsg = Message.copy(msg);
                 sendLock.lock();
                 this.send(newMsg, sendPort);
                 sendLock.unlock();
@@ -239,8 +223,6 @@ public class Node implements Runnable {
 
     @Override
     public void run() {
-//        Thread.currentThread().setPriority(6);
-
         this.roundNumber += 1;
 
         linkStateRound();
@@ -248,18 +230,14 @@ public class Node implements Runnable {
         // we look at this node's SequenceCounter,
         // and check if all the sequence numbers in it are equal to roundNumber.
         // this will indicate that the node has received all of its links and is ready to finish the round.
-        boolean allUpdated;
-        do {
-            allUpdated = true;
-            for (int id : SequenceCounter.keySet()) {
-                if (id != nodeID)
-                    allUpdated = allUpdated && (SequenceCounter.get(id) == roundNumber);
-            }
-        } while (!allUpdated);
+        SequenceCounter.put(nodeID, roundNumber);
+        //noinspection StatementWithEmptyBody
+        while (new HashSet<>(SequenceCounter.values()).size() > 1);
 
         // signal to manager that this node has finished its round.
         this.finishRoundSignal.countDown();
     }
+
     private void linkStateRound() {
         // create the local link state of the node
         HashSet<Pair<Pair<Integer, Integer>, Double>> linkStates = createLinkStates();
@@ -270,15 +248,9 @@ public class Node implements Runnable {
         // wait until link states from all other n - 1 nodes have been received
         try {
             listenerSignal.await();
-            // System.out.println("node number " + nodeID + " has received " + (this.numOfNodes - 1) + " messages");
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-
-        // the ClientHandlers update the node's routing table whenever they receive a message,
-        // and then they release the 'listenerSignal' semaphore to signal it to the node.
-        // Thus, after acquiring the lock we know that the node's adjacency matrix is completely up-to-date,
-        // so we can finish here.
     }
 
     /**

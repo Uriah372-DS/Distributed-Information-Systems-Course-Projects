@@ -11,11 +11,6 @@ public class Message implements Serializable {
         this.info = new Pair<>(type, content);
     }
 
-    public Message(TYPES type) {
-        HashMap<String, Serializable> content = new HashMap<>();
-        this.info = new Pair<>(type, content);
-    }
-
     public TYPES getType() {
         return info.getKey();
     }
@@ -27,6 +22,20 @@ public class Message implements Serializable {
     public HashMap<String, Serializable> getContent() {
         if (info.getKey() == TYPES.BROADCAST || info.getKey() == TYPES.ACKNOWLEDGEMENT) return info.getValue();
         else return null;
+    }
+
+    public static Message copy(Message msg) {
+        TYPES copyMsgType = msg.getType();
+        if (copyMsgType == TYPES.BROADCAST || copyMsgType == TYPES.ACKNOWLEDGEMENT) {
+            HashMap<String, Serializable> copyMsgContent = new HashMap<>();
+            HashMap<String, Serializable> msgContent = msg.getContent();
+
+            for (String key : msgContent.keySet()) {
+                copyMsgContent.put(key, msgContent.get(key));
+            }
+            return new Message(copyMsgType, copyMsgContent);
+        }
+        return null;
     }
 
     /**
