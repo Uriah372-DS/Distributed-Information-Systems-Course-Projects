@@ -2,7 +2,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.util.Scanner;
 
-public class main {
+public class Main {
     public static void main(String[] args) throws FileNotFoundException {
         String pref = "Link_State_Routing_with_Multithreading/src/tests/";
         String[] paths = {

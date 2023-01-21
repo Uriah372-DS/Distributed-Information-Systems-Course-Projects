@@ -2,6 +2,28 @@ import java.io.*;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 
+/**
+ * The ExManager is used as a global Synchronizer of the entire network.
+ * It is used to set up the network, start and stop communication between the nodes, and terminate the simulation.
+ * Every round in the link state routing governed by the ExManager works in 3 phases:
+ * 1. prepareToStart()
+ * 2. run the round
+ * 3. prepareToFinish()
+ * In the 1st phase, all nodes are instructed by the ExManager to start "listening" for messages from their neighbors.
+ * This part is executed sequentially to avoid any node trying to send messages to nodes that aren't listening yet,
+ * which can cause missed messages and at worst case a runtime error.
+ * In the 2nd phase, the nodes are instructed to start the actual algorithm. this implies in the case of link state
+ * routing that the node will broadcast their link states to all nodes in the network.
+ * The 3rd part will only be called inside the added terminate() method, for easier optimization,
+ * and in it the ExManager will instruct the nodes to immediately stop listening to for messages.
+ * The synchronization between the phases in done by using a CountDownLatch. The ExManager sends a latch to the nodes
+ * in the first phase, and they use it to signal the ExManager that they have completed the 2nd phase
+ * and are ready to finish the round.
+ * The ExManager will block until all the nodes signal that they are finished,
+ * and they can print the correct output.
+ * This doesn't imply that the nodes have any information on the entire network,
+ * but because the algorithm is supposed to be synchronized then a synchronizer is mandatory to ensure it.
+ */
 public class ExManager {
     private final String path;
     private int numOfNodes;
@@ -11,25 +33,16 @@ public class ExManager {
     /**
      * The class constructor only saves the path to the input file.
      * The function read_txt actually reads the input and creates the graph.
-     * @param path - the path to the file from which to read the input
      */
     public ExManager(String path) {
-
         this.path = path;
         this.roundNumber = 0;
     }
 
-    /**
-     * returns the node with this id
-     * @param id - Node id
-     * @return - Node with this id
-     */
+    /** returns the node with this id. */
     public Node getNode(int id) { return nodes.get(id); }
 
-    /**
-     * Returns the number of nodes in the network.
-     * @return - num_of_nodes
-     */
+    /** Returns the number of nodes in the network. */
     public int getNum_of_nodes() {
         return this.numOfNodes;
     }
@@ -45,68 +58,52 @@ public class ExManager {
         this.nodes.get(id2).updateWeight(id1, weight);
     }
 
-    /**
-     * read text from given path and create the network
-     */
+    /** read text from given path and create the nodes in the network. */
     public void read_txt() throws FileNotFoundException {
         Scanner scanner = new Scanner(new File(path));
-        // get number of nodes on first line:
         this.numOfNodes = Integer.parseInt(scanner.nextLine());
-
         this.nodes = new HashMap<>();
-        // scan nodes information on the rest of the input.
         while(scanner.hasNextLine()) {
             String line = scanner.nextLine();
-
-            //stop reading when seeing "stop" string
             if(line.contains("stop")) { break; }
 
             String[] node_parameters = line.split(" ");
             int nodeId = Integer.parseInt(node_parameters[0]);
-            HashMap<Integer, HashMap<String, Number>> NeighborsTable = new HashMap<>();
+            HashMap<Integer, HashMap<String, Number>> neighborsInfo = new HashMap<>();
             for (int i = 1; i < node_parameters.length; i += 4) {
 
-                // parse the file string info of this label
                 int neighborId = Integer.parseInt(node_parameters[i]);
-                double linkWeight = Double.parseDouble(node_parameters[i + 1]);
+                double weight = Double.parseDouble(node_parameters[i + 1]);
                 int sendPort = Integer.parseInt(node_parameters[i + 2]);
                 int listenPort = Integer.parseInt(node_parameters[i + 3]);
 
-                // add it to the node's NeighborsTable
                 HashMap<String, Number> nodeAttributes = new HashMap<>();
-                nodeAttributes.put("weight", linkWeight);
+                nodeAttributes.put("weight", weight);
                 nodeAttributes.put("send port", sendPort);
                 nodeAttributes.put("listen port", listenPort);
-                NeighborsTable.put(neighborId, nodeAttributes);
+                neighborsInfo.put(neighborId, nodeAttributes);
             }
-            this.nodes.put(nodeId, new Node(nodeId, this.numOfNodes, NeighborsTable));
+            this.nodes.put(nodeId, new Node(nodeId, this.numOfNodes, neighborsInfo));
         }
     }
 
-    /**
-     * prepares to start the link-state routing algorithm round.
-     */
+    /** 1st phase - prepares to start the link-state routing algorithm round. */
     private CountDownLatch prepareToStart() {
-        // create a semaphore for the nodes to signal when they've finished the round
-        // and instruct them to start listening to their neighbor nodes.
         CountDownLatch finishRoundSignal = new CountDownLatch(this.numOfNodes);
         for (int id = 1; id <= this.numOfNodes; id++) {
             this.nodes.get(id).setFinishRoundSignal(finishRoundSignal);
-            this.nodes.get(id).establishConnections();
+            this.nodes.get(id).startListening();
         }
-
         return finishRoundSignal;
     }
-    /**
-     * the entire link-state routing algorithm.
-     */
+
+    /** runs a single round of the routing algorithm. */
     public void start() {
-
         this.roundNumber += 1;
-
         CountDownLatch finishRoundSignal = prepareToStart();
 
-        // start the round by creating thread instances of the nodes for the current round and calling "start".
+        // 2nd phase - start the round by creating thread instances of the nodes for the current round
+        // and calling "start".
         HashMap<Integer, Thread> nodeThreads = new HashMap<>();
         for (int id = 1; id <= this.numOfNodes; id++) {
             Thread nodeThread = new Thread(this.nodes.get(id));
@@ -117,36 +114,29 @@ public class ExManager {
         // wait until all nodes signal that they are finished running the link state round locally.
         try {
             finishRoundSignal.await();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
         }
+        catch (InterruptedException ignored) {}
 
-        // wait until all node threads are finished.
+        // wait until all node threads are finished - this can take a moment because of OS thread priorities.
         for (int id = 1; id <= this.numOfNodes; id++) {
             try {
                 nodeThreads.get(id).join();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+            } catch (InterruptedException ignored) {}
         }
     }
 
-    /**
-     * prepares to finish the link-state routing algorithm round.
-     */
+    /** closes all sockets and servers and such. */
     private void prepareToFinish() {
-
-        // once all node threads are finished,
-        // we know that they all received the link states from all other nodes in the network,
-        // so we can safely instruct them to stop listening to their neighbor nodes before exiting.
+        CountDownLatch signal = new CountDownLatch(numOfNodes);
         for (int id = 1; id <= this.numOfNodes; id++) {
-            this.nodes.get(id).terminateConnections();
+            this.nodes.get(id).stopListening(signal);
         }
+        try {
+            signal.await();
+        } catch (InterruptedException ignored) {}
     }
-
 
     public void terminate() {
         prepareToFinish();
-        System.out.println("==================== Finished Round " + roundNumber + " ====================\n");
     }
 }
